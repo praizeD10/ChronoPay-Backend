@@ -157,7 +157,9 @@
     "src/__tests__/booking-intents.test.ts",
     "src/__tests__/booking-intents-idempotency.test.ts",
     "src/__tests__/booking-intent-service.test.ts",
-    "src/routes/__tests__/booking-intents.test.ts"
+    "src/routes/__tests__/booking-intents.test.ts",
+    "src/routes/__tests__/booking-intents.cancel.test.ts",
+    "src/routes/__tests__/booking-intents.cancel-preview.test.ts"
   ],
 
   "src/routes/webhooks.ts": [
@@ -629,6 +631,15 @@
   "src/metrics/slotMetrics.ts": [
     "src/__tests__/metrics-cardinality.test.ts",
     "src/__tests__/appMetrics.test.ts"
+  ],
+
+  "src/metrics/bookingMetrics.ts": [
+    "src/routes/__tests__/booking-intents.cancel.test.ts"
+  ],
+
+  "src/services/cancellationPolicy.ts": [
+    "src/routes/__tests__/booking-intents.cancel.test.ts",
+    "src/routes/__tests__/booking-intents.cancel-preview.test.ts"
   ],
 
   "src/docs/update-slot-endpoint.md": [],

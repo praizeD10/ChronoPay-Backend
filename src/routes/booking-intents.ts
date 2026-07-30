@@ -15,6 +15,7 @@ import { requireFeatureFlag } from "../middleware/featureFlags.js";
 import { auditMiddleware } from "../middleware/audit.js";
 import { createAuthAwareRateLimiter } from "../middleware/rateLimiter.js";
 import { idempotencyMiddleware } from "../middleware/idempotency.js";
+import { payloadLimit, ROUTE_PAYLOAD_LIMITS } from "../middleware/payloadLimit.js";
 import {
   BookingIntentService,
   BookingIntentError,
@@ -23,6 +24,8 @@ import { InMemoryBookingIntentRepository } from "../modules/booking-intents/book
 import { InMemorySlotRepository } from "../modules/slots/slot-repository.js";
 import { logger } from "../utils/logger.js";
 import { recordFraudScore } from "../metrics/fraudDriftMetrics.js";
+import { RefundService } from "../services/refund.js";
+import { bookingCancelledTotal } from "../metrics/bookingMetrics.js";
 
 export function createBookingIntentsRouter() {
   const router = Router();
@@ -55,6 +58,7 @@ export function createBookingIntentsRouter() {
     "/",
     requireFeatureFlag("CREATE_BOOKING_INTENT"),
     requireAuthenticatedActor(["customer", "admin"]),
+    ...payloadLimit(ROUTE_PAYLOAD_LIMITS.bookingIntent),
     idempotencyMiddleware,
     createAuthAwareRateLimiter(),
     auditMiddleware("CREATE_BOOKING_INTENT"),
@@ -144,12 +148,56 @@ export function createBookingIntentsRouter() {
     requireAuthenticatedActor(["customer", "admin"]),
     createAuthAwareRateLimiter(),
     auditMiddleware("CANCEL_BOOKING_INTENT"),
-    (req: Request, res: Response): void => {
+    async (req: Request, res: Response): Promise<void> => {
       try {
+        const confirm = req.query.confirm === "true";
+
+        // Always compute the refund preview first — it validates ownership + status.
+        const breakdown = bookingIntentService.previewCancel(req.params.id, req.auth!);
+
+        if (!confirm) {
+          // Preview-only: return refund breakdown without mutating state.
+          res.status(200).json({
+            success: true,
+            confirmed: false,
+            refund: breakdown,
+          });
+          return;
+        }
+
+        // Confirm path: cancel the intent, issue refund, emit metric.
         const intent = bookingIntentService.cancelIntent(req.params.id, req.auth!);
+
+        // Issue refund when there is a net amount to return.
+        if (breakdown.netRefund > 0) {
+          try {
+            await RefundService.createRefund({
+              paymentId: intent.id,
+              amountCents: breakdown.netRefund,
+              reason: `Booking ${intent.id} cancelled — policy ${breakdown.policyVersion}`,
+              refundedBy: req.auth!.userId,
+            });
+          } catch (refundErr) {
+            // Cancel already went through; log and surface refund failure to caller.
+            logger.error({ err: refundErr, intentId: intent.id }, "Refund failed after booking cancellation");
+            res.status(502).json({
+              success: false,
+              error: "Booking was cancelled but the refund could not be processed. Please contact support.",
+              code: "REFUND_FAILED",
+              intentId: intent.id,
+              refund: breakdown,
+            });
+            return;
+          }
+        }
+
+        bookingCancelledTotal.labels(breakdown.policyVersion).inc();
+
         res.status(200).json({
           success: true,
+          confirmed: true,
           intent,
+          refund: breakdown,
         });
       } catch (error) {
         handleServiceError(error, res);
